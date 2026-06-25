@@ -2,7 +2,15 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from utils import PROGRESS_FILE, QUIZ_FILE, compute_stats, load_progress, load_quizzes
+from utils import (
+    PROGRESS_FILE,
+    QUIZ_FILE,
+    compute_stats,
+    export_progress_bytes,
+    import_progress_bytes,
+    load_progress,
+    load_quizzes,
+)
 
 
 def show_dashboard():
@@ -17,6 +25,7 @@ def show_dashboard():
     col2.metric("Unanswered", unanswered)
     col3.metric("Correct", correct)
     col4.metric("Wrong", wrong)
+    show_backup_restore()
     show_topic_distribution()
     if PROGRESS_FILE.exists() and len(PROGRESS_FILE.read_text().strip()) > 0:
         show_knowledge_gaps(topic_field="gcp_topics")
@@ -26,6 +35,41 @@ def show_dashboard():
         st.info("No progress found. Answer some quizzes to see your knowledge gaps.", icon="ℹ️")
 
     return {"total": total, "correct": correct, "wrong": wrong, "unanswered": unanswered}
+
+
+def show_backup_restore():
+    with st.expander("💾 Backup / Restore progress", expanded=False):
+        st.caption(
+            "This app runs on a server that resets periodically, so progress is not "
+            "stored permanently. Download your progress before you leave, and upload "
+            "it again next time to pick up where you left off."
+        )
+        c1, c2 = st.columns(2)
+
+        with c1:
+            st.download_button(
+                "⬇️ Download progress",
+                data=export_progress_bytes(),
+                file_name="progress.json",
+                mime="application/json",
+                width="stretch",
+            )
+
+        with c2:
+            uploaded = st.file_uploader(
+                "⬆️ Upload progress.json", type=["json"], key="progress_uploader"
+            )
+            merge = st.checkbox(
+                "Merge with current (uncheck to replace)", value=True, key="progress_merge"
+            )
+            if uploaded is not None:
+                try:
+                    count = import_progress_bytes(uploaded.getvalue(), merge=merge)
+                    st.success(f"Imported progress — {count} questions tracked.")
+                    if st.button("Refresh dashboard", key="progress_refresh"):
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Could not read that file: {e}")
 
 
 def show_topic_distribution():
@@ -43,20 +87,15 @@ def show_topic_distribution():
         c3.metric("Rows (topic tags)", f"{total_rows:,}", help="After explode(); one row per (question, topic) tag.")
         c2.metric("Unique topics", f"{unique_topics:,}")
 
-    # --- Compute topic stats ---
     topic_stats = df["topic"].dropna().astype(str).value_counts().rename_axis("topic").reset_index(name="count")
     topic_stats["percent"] = (topic_stats["count"] / topic_stats["count"].sum()) * 100.0
 
-    # Keep top N
     plot_df = topic_stats.head(top_n).copy()
-
-    # Sort so largest is on top (nice for horizontal bars)
     plot_df = plot_df.sort_values("count", ascending=True)
 
     value_col = "count"
     value_label = "Count"
 
-    # --- Plotly: modern horizontal bar chart ---
     fig = px.bar(
         plot_df,
         x=value_col,
@@ -67,12 +106,11 @@ def show_topic_distribution():
             "topic": True,
             "count": ":,",
             "percent": ":.2f",
-            value_col: False,  # avoid duplicate in hover
+            value_col: False,
         },
         title="Topics (Top N)",
     )
 
-    # Modern styling tweaks
     fig.update_traces(
         texttemplate="%{text:,}",
         textposition="outside",
@@ -108,7 +146,6 @@ def show_knowledge_gaps(topic_field: str = "gcp_topics"):
     topic_field_name = topic_field.replace("_", " ").title()
     st.title(f"🧠 Knowledge Gap per {topic_field_name}")
 
-    # --- Compute topic stats ---
     topic_stats = (
         df.dropna(subset=["topic"])
         .assign(topic=lambda d: d["topic"].astype(str))
@@ -122,12 +159,9 @@ def show_knowledge_gaps(topic_field: str = "gcp_topics"):
         .rename(columns={"ml_topics": "topic"})
     )
 
-    # Safety: ensure boolean -> numeric
-    # (If answer_correct is already bool, sum/mean work; if string, fix upstream)
     topic_stats["accuracy"] = topic_stats["accuracy"].astype(float)
     topic_stats["gap"] = 1.0 - topic_stats["accuracy"]
 
-    # --- Controls ---
     with st.container(border=True):
         c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.2, 2.4], vertical_alignment="center")
 
@@ -150,7 +184,6 @@ def show_knowledge_gaps(topic_field: str = "gcp_topics"):
         total_topics = int(topic_stats["topic"].nunique())
         c4.metric("Topics covered", f"{total_topics:,}")
 
-    # --- Filter by max accuracy + min attempts ---
     plot_df = topic_stats[
         (topic_stats["attempts"] >= min_question_topic) & (topic_stats["accuracy"] <= max_accuracy)
     ].copy()
@@ -158,7 +191,6 @@ def show_knowledge_gaps(topic_field: str = "gcp_topics"):
     if plot_df.empty:
         st.info("No topics match the current filters. Try increasing 'Max accuracy' or lowering 'Min questions'.")
         return
-    # --- Sorting ---
     if sort_by == "Gap (largest first)":
         plot_df = plot_df.sort_values("gap", ascending=True)
         x_col = "gap"
@@ -178,11 +210,9 @@ def show_knowledge_gaps(topic_field: str = "gcp_topics"):
         title = "Topics with most attempts (filtered by accuracy)"
         text_template = "%{x:,}"
 
-    # Keep the chart readable (show top K after sorting)
     top_k = st.slider("Max topics to display", 5, 60, 25, key=f"max_topics_{topic_field}")
     plot_df = plot_df.head(top_k).copy()
 
-    # --- Plotly chart (modern horizontal bars) ---
     fig = px.bar(
         plot_df,
         x=x_col,
@@ -195,7 +225,7 @@ def show_knowledge_gaps(topic_field: str = "gcp_topics"):
             "correct": ":,",
             "accuracy": ":.2f",
             "gap": ":.2f",
-            x_col: False,  # avoid duplicate
+            x_col: False,
         },
         title=title,
     )

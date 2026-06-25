@@ -69,6 +69,30 @@ def reset_progress():
         PROGRESS_FILE.unlink()
 
 
+def export_progress_bytes() -> bytes:
+    """Return the current progress as JSON bytes for download."""
+    progress = load_progress()
+    return json.dumps(progress, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def import_progress_bytes(raw: bytes, merge: bool = True) -> int:
+    """Load progress from uploaded JSON bytes.
+
+    If merge=True, combines with existing progress (uploaded values win on conflict).
+    If merge=False, replaces existing progress entirely.
+    Returns the number of question entries after import.
+    """
+    incoming = json.loads(raw.decode("utf-8"))
+    incoming = {int(k): bool(v) for k, v in incoming.items()}
+    if merge:
+        current = load_progress()
+        current.update(incoming)
+        save_progress(current)
+        return len(current)
+    save_progress(incoming)
+    return len(incoming)
+
+
 def set_css_style(css_path: Path):
     if not css_path.exists():
         return
